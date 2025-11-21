@@ -1363,18 +1363,33 @@ class BaseAgent:
         if not source:
             raise ValueError("No source specified for backup job")
         
-        # Normalize path for Windows (convert forward slashes to backslashes, resolve relative paths)
+        # Normalize path for Windows (convert forward slashes to backslashes)
         # pathlib.Path handles forward slashes on Windows, but we'll normalize explicitly
-        normalized_source = os.path.normpath(source) if os.name == 'nt' else source
-        source_path = Path(normalized_source).resolve()
+        if os.name == 'nt':
+            # On Windows, normalize forward slashes to backslashes
+            normalized_source = os.path.normpath(source)
+            # Try normalized path first
+            source_path = Path(normalized_source)
+            if not source_path.exists():
+                # Try original path (pathlib might handle it)
+                source_path = Path(source)
+            # Resolve only if path exists (resolve() can fail if path doesn't exist)
+            if source_path.exists():
+                try:
+                    source_path = source_path.resolve()
+                except (OSError, RuntimeError):
+                    # If resolve fails, use the path as-is
+                    pass
+        else:
+            source_path = Path(source)
+            if source_path.exists():
+                try:
+                    source_path = source_path.resolve()
+                except (OSError, RuntimeError):
+                    pass
         
         if not source_path.exists():
-            # Try the original path as well in case normalization changed something
-            source_path_alt = Path(source).resolve()
-            if source_path_alt.exists():
-                source_path = source_path_alt
-            else:
-                raise ValueError(f"Source path does not exist: {source} (normalized: {normalized_source}, resolved: {source_path})")
+            raise ValueError(f"Source path does not exist: {source} (tried: {source_path})")
         
         # Prepare metadata for backup streaming
         metadata = {
