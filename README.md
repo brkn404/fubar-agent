@@ -28,6 +28,21 @@ pip install --user aiohttp click pyyaml
 pip install --user .
 ```
 
+### Windows: Set Up Service Account First
+
+On Windows, set up the service account before installing:
+
+```powershell
+# Clone the repository
+git clone https://github.com/brkn404/fubar-agent.git
+cd fubar-agent
+
+# Run setup script as Administrator
+.\scripts\setup-fubar-user-windows.ps1
+
+# Then proceed with installation
+```
+
 ### Single Executable
 
 For systems without Python, use the standalone executable built with PyInstaller or Nuitka:

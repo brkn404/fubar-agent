@@ -147,19 +147,46 @@ launchctl unload ~/Library/LaunchAgents/com.fubar.agent.plist
 
 ### Windows
 
-#### Using Bundle
+#### Step 1: Set Up Service Account (Recommended)
+
+Before installing the agent, set up a dedicated service account:
+
+```powershell
+# Clone the repository
+git clone https://github.com/brkn404/fubar-agent.git
+cd fubar-agent
+
+# Run setup script as Administrator
+# Right-click PowerShell → Run as Administrator
+.\scripts\setup-fubar-user-windows.ps1
+```
+
+The script will:
+- Create `FubarService` user account
+- Set up directory structure (`C:\ProgramData\FUBAR`)
+- Create Python virtual environment
+- Configure permissions
+- Generate secure password (save this!)
+
+**Alternative: Manual Setup**
+See [docs/AGENT_USER_SETUP.md](../../docs/AGENT_USER_SETUP.md) for manual setup instructions.
+
+#### Step 2: Install Agent
+
+##### Using Bundle
 
 1. Extract `fubar-agent-VERSION-windows-ARCH.zip`
 2. Right-click `install.bat` → Run as Administrator
 3. Follow the prompts
 
-#### Manual Installation
+##### Manual Installation
 
 ```powershell
-# Install dependencies
-python -m pip install --user aiohttp aiofiles click pyyaml psutil pywin32
+# Install in virtual environment (created by setup script)
+& "C:\ProgramData\FUBAR\venv\Scripts\pip.exe" install -e "C:\ProgramData\FUBAR\fubar-agent"
 
-# Install agent
+# Or install dependencies manually
+python -m pip install --user aiohttp aiofiles click pyyaml psutil pywin32
 python -m pip install --user .
 
 # Configure
