@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 from .base import BaseAgent
-from .format_analyzers import get_analyzer_for_file
 
 logger = logging.getLogger(__name__)
 
@@ -405,62 +404,35 @@ class LinuxAgent(BaseAgent):
                 except Exception:
                     pass
                 
-                # Format-specific structural validation
-                structure_valid = None
-                structure_errors = []
-                format_specific_metrics = {}
+                # Format-specific structural validation (using shared method)
+                structure_valid, structure_errors, format_specific_metrics = self._run_format_analyzer(
+                    file, file_ext, self._scan_results
+                )
                 
-                analyzer = get_analyzer_for_file(file)
-                if analyzer:
-                    try:
-                        logger.debug(f"Running format analyzer for {file.name} ({file_ext})")
-                        analysis_result = analyzer.analyze(file)
-                        structure_valid = analysis_result.get('structure_valid')
-                        structure_errors = analysis_result.get('structure_errors', [])
-                        format_specific_metrics = analysis_result.get('format_specific_metrics', {})
-                        
-                        if structure_errors:
-                            for error in structure_errors:
-                                anomalies.append({
-                                    'type': 'structure_invalid',
-                                    'severity': 'high',
-                                    'message': f'Structure validation error: {error}',
-                                    'file': str(file),
-                                    'format': file_ext,
-                                    'structure_errors': structure_errors
-                                })
-                                logger.warning(f"🔍 Structure validation failed for {file.name}: {error}")
-                        
-                        if structure_valid is False:
-                            # Structure is invalid - this is a high-severity issue
-                            is_malware_suspicious = True
-                            malware_reasons.append(f'Invalid file structure: {", ".join(structure_errors[:2])}')
-                            logger.warning(f"🚨 Invalid structure detected for {file.name}")
-                            
-                            # Track structure-invalid files
-                            self._scan_results['structure_invalid_files'].append({
-                                'file': str(file),
-                                'errors': structure_errors,
-                                'metrics': format_specific_metrics
-                            })
-                        
-                        # Track format analysis stats
-                        if format_specific_metrics:
-                            format_type = file_ext or 'unknown'
-                            if format_type not in self._scan_results['format_analysis_stats']:
-                                self._scan_results['format_analysis_stats'][format_type] = {
-                                    'total': 0,
-                                    'valid': 0,
-                                    'invalid': 0
-                                }
-                            self._scan_results['format_analysis_stats'][format_type]['total'] += 1
-                            if structure_valid:
-                                self._scan_results['format_analysis_stats'][format_type]['valid'] += 1
-                            elif structure_valid is False:
-                                self._scan_results['format_analysis_stats'][format_type]['invalid'] += 1
-                    except Exception as e:
-                        logger.debug(f"Format analyzer error for {file.name}: {e}")
-                        structure_errors.append(f"Analyzer error: {str(e)}")
+                if structure_errors:
+                    for error in structure_errors:
+                        anomalies.append({
+                            'type': 'structure_invalid',
+                            'severity': 'high',
+                            'message': f'Structure validation error: {error}',
+                            'file': str(file),
+                            'format': file_ext,
+                            'structure_errors': structure_errors
+                        })
+                        logger.warning(f"🔍 Structure validation failed for {file.name}: {error}")
+                
+                if structure_valid is False:
+                    # Structure is invalid - this is a high-severity issue
+                    is_malware_suspicious = True
+                    malware_reasons.append(f'Invalid file structure: {", ".join(structure_errors[:2])}')
+                    logger.warning(f"🚨 Invalid structure detected for {file.name}")
+                    
+                    # Track structure-invalid files
+                    self._scan_results['structure_invalid_files'].append({
+                        'file': str(file),
+                        'errors': structure_errors,
+                        'metrics': format_specific_metrics
+                    })
                 
                 # YARA scanning (if enabled)
                 yara_matches = []
@@ -513,22 +485,12 @@ class LinuxAgent(BaseAgent):
                 if file_ext == '.exe' and os.name != 'nt' and not is_malware_suspicious:
                     logger.warning(f"⚠️  Windows exe on Linux NOT quarantined: {file} (is_malware_suspicious={is_malware_suspicious})")
                 
-                # Check for high entropy (potential encryption/packing)
+                # Check for high entropy (potential encryption/packing) - using shared method
                 try:
                     with open(file, 'rb') as f:
                         sample = f.read(min(4096, file_size))
                         if len(sample) > 0:
-                            # Calculate Shannon entropy
-                            import math
-                            byte_counts = [0] * 256
-                            for byte in sample:
-                                byte_counts[byte] += 1
-                            
-                            entropy = 0
-                            for count in byte_counts:
-                                if count > 0:
-                                    p = count / len(sample)
-                                    entropy -= p * math.log2(p)
+                            entropy = self._calculate_entropy(sample)
                             
                             # High entropy (>7.5) suggests encryption/packing
                             if entropy > 7.5 and file_ext in {'.exe', '.dll', '.bin', '.scr', '.sys'}:
@@ -662,41 +624,9 @@ class LinuxAgent(BaseAgent):
                     except Exception as e:
                         logger.error(f"Failed to quarantine suspicious file {file}: {e}")
                 
-                # AI Filter Creator: Check for unknown file types
+                # AI Filter Creator: Check for unknown file types - using shared method
                 if enable_ai_filter_creator:
-                    # Detect unknown file types (no recognized extension or magic number)
-                    known_extensions = {
-                        '.txt', '.log', '.json', '.xml', '.csv', '.html', '.css', '.js',
-                        '.py', '.sh', '.pl', '.rb', '.php', '.java', '.cpp', '.c', '.h',
-                        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-                        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.ico',
-                        '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar',
-                        '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv',
-                        '.db', '.sqlite', '.sql', '.sqlite3',
-                        '.exe', '.dll', '.so', '.dylib', '.bin'
-                    }
-                    
-                    # Check if file type is unknown
-                    is_unknown = False
-                    if not file_ext or file_ext not in known_extensions:
-                        # Check magic number
-                        try:
-                            with open(file, 'rb') as f:
-                                magic = f.read(16)
-                                # Common magic numbers
-                                known_magics = [
-                                    b'\x89PNG', b'\xff\xd8\xff', b'GIF8', b'%PDF',
-                                    b'PK\x03\x04', b'\x7fELF', b'MZ', b'\xca\xfe\xba\xbe',
-                                    b'<?xml', b'<!DOCTYPE', b'{\n', b'#!/'
-                                ]
-                                
-                                is_known_magic = any(magic.startswith(m) for m in known_magics)
-                                if not is_known_magic:
-                                    is_unknown = True
-                        except Exception:
-                            is_unknown = True
-                    
-                    if is_unknown:
+                    if self._check_unknown_file_type(file, file_ext):
                         logger.info(f"🔍 Unknown file type detected: {file} (extension: {file_ext or 'none'})")
                         logger.info(f"   AI Filter Creator would analyze this file type")
                         # In a full implementation, this would call AI Filter Creator
@@ -722,149 +652,23 @@ class LinuxAgent(BaseAgent):
         except Exception as e:
             logger.debug(f"Error scanning file {file_path}: {e}")
     
-    async def _scan_with_yara(self, file_path: Path, rules_dir: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Scan file with YARA rules"""
-        import subprocess
-        import asyncio
+    def _get_yara_rules_search_paths(self) -> List[Path]:
+        """Get Linux-specific YARA rules search paths"""
+        base_paths = super()._get_yara_rules_search_paths()
         
-        # Check if yara-python is available (but don't fail if it's not)
-        try:
-            import yara
-            yara_python_available = True
-        except ImportError:
-            yara_python_available = False
-            logger.debug("yara-python not available, will use command-line yara")
+        # Add Linux-specific paths
+        linux_paths = [
+            # Linux host paths
+            Path('/home/kit/fubar/rules-master'),
+            Path('/home/kit/fubar-main/rules-master'),
+            Path('/home/kit/fubar/unified-pipeline/rules-master'),
+            Path('/home/kit/rules-master'),
+            # System-wide
+            Path('/usr/local/rules-master'),
+            Path('/opt/rules-master'),
+        ]
         
-        # Find YARA rules directory (needed for both yara-python and command-line)
-        if not rules_dir:
-            # Try to find rules-master directory
-            # Get the agent's working directory to search relative to it
-            agent_cwd = Path.cwd()
-            agent_file_dir = Path(__file__).parent.parent.parent.parent
-            
-            possible_paths = [
-                # Linux host paths
-                Path('/home/kit/fubar/rules-master'),
-                Path('/home/kit/fubar-main/rules-master'),
-                Path('/home/kit/fubar/unified-pipeline/rules-master'),
-                Path('/home/kit/rules-master'),
-                # Mac development path
-                Path('/Volumes/evo4TB/kit/kit/fubar/rules-master'),
-                # Relative to current working directory
-                agent_cwd / 'rules-master',
-                agent_cwd.parent / 'rules-master',
-                agent_cwd.parent.parent / 'rules-master',
-                # Relative to agent code location
-                agent_file_dir / 'rules-master',
-                agent_file_dir.parent / 'rules-master',
-                # System-wide
-                Path('/') / 'rules-master',
-                Path('/usr/local') / 'rules-master',
-                Path('/opt') / 'rules-master',
-            ]
-            
-            logger.info(f"🔍 Searching for YARA rules directory in {len(possible_paths)} possible locations...")
-            for path in possible_paths:
-                if path.exists() and (path / 'malware_index.yar').exists():
-                    rules_dir = str(path)
-                    logger.info(f"✅ Found YARA rules directory: {rules_dir}")
-                    break
-                else:
-                    logger.debug(f"   Checked: {path} (exists: {path.exists()}, has malware_index.yar: {(path / 'malware_index.yar').exists() if path.exists() else False})")
-        
-        if not rules_dir:
-            logger.warning("⚠️  YARA rules directory not found, skipping YARA scan")
-            logger.warning(f"   Searched paths: {[str(p) for p in possible_paths]}")
-            logger.warning(f"   Current working directory: {Path.cwd()}")
-            logger.warning(f"   Agent file location: {Path(__file__).parent}")
-            return []
-        
-        logger.info(f"✅ Using YARA rules directory: {rules_dir}")
-        logger.info(f"   malware_index.yar exists: {(Path(rules_dir) / 'malware_index.yar').exists()}")
-        logger.info(f"   packers_index.yar exists: {(Path(rules_dir) / 'packers_index.yar').exists()}")
-        logger.info(f"   Using command-line yara (yara-python: {'available' if yara_python_available else 'not available'})")
-        
-        # Use yara command-line tool for scanning (more reliable than yara-python)
-        # Scan with malware rules
-        malware_rules = Path(rules_dir) / 'malware_index.yar'
-        packer_rules = Path(rules_dir) / 'packers_index.yar'
-        
-        matches = []
-        
-        # Log which rules files we're using
-        logger.debug(f"YARA scanning {file_path.name} with rules from {rules_dir}")
-        logger.debug(f"  malware_index.yar: {malware_rules.exists()}")
-        logger.debug(f"  packers_index.yar: {packer_rules.exists()}")
-        
-        # Scan with malware rules
-        if malware_rules.exists():
-            try:
-                logger.debug(f"Running: yara -s {malware_rules} {file_path}")
-                process = await asyncio.create_subprocess_exec(
-                    'yara', '-s', str(malware_rules), str(file_path),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
-                
-                # Log YARA return code and output for debugging
-                logger.debug(f"YARA return code: {process.returncode}")
-                if stderr:
-                    stderr_text = stderr.decode()
-                    # Only log stderr if it's not just warnings
-                    if 'warning:' not in stderr_text.lower() or len(stderr_text) > 500:
-                        logger.debug(f"YARA stderr: {stderr_text[:200]}")
-                
-                if process.returncode == 0 and stdout:
-                    # Parse YARA output
-                    output = stdout.decode()
-                    logger.debug(f"YARA output for {file_path}: {output[:200] if len(output) > 200 else output}")
-                    for line in output.splitlines():
-                        if line.strip():
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                rule_name = parts[0]
-                                match_info = {
-                                    'rule': rule_name,
-                                    'tags': [],
-                                    'meta': {},
-                                    'file': str(file_path)
-                                }
-                                matches.append(match_info)
-                                logger.warning(f"✅ YARA rule matched: {rule_name} on {file_path.name}")
-                elif stderr:
-                    logger.debug(f"YARA stderr for {file_path}: {stderr.decode()[:200]}")
-            except asyncio.TimeoutError:
-                logger.debug(f"YARA scan timeout for {file_path}")
-            except Exception as e:
-                logger.debug(f"YARA scan error: {e}")
-        
-        # Scan with packer rules
-        if packer_rules.exists():
-            try:
-                process = await asyncio.create_subprocess_exec(
-                    'yara', '-s', str(packer_rules), str(file_path),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
-                
-                if process.returncode == 0 and stdout:
-                    for line in stdout.decode().splitlines():
-                        if line.strip():
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                rule_name = parts[0]
-                                matches.append({
-                                    'rule': rule_name,
-                                    'tags': ['packer'],
-                                    'meta': {},
-                                    'file': str(file_path)
-                                })
-            except Exception:
-                pass
-        
-        return matches
+        return linux_paths + base_paths
     
     async def _notify_server_quarantine(
         self,

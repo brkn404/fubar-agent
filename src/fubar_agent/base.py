@@ -10,7 +10,7 @@ import os
 import platform
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from uuid import UUID
 
 import aiohttp
@@ -1792,4 +1792,308 @@ class BaseAgent:
         root_logger = logging.getLogger()
         if handler in root_logger.handlers:
             root_logger.removeHandler(handler)
+    
+    # ============================================================================
+    # Shared Scanning Methods
+    # These methods are used by all platform-specific agents to reduce duplication
+    # ============================================================================
+    
+    def _calculate_entropy(self, data: bytes) -> float:
+        """
+        Calculate Shannon entropy of data.
+        
+        Args:
+            data: Bytes to calculate entropy for
+            
+        Returns:
+            Entropy value (0-8, where 8 is maximum entropy)
+        """
+        import math
+        
+        if len(data) == 0:
+            return 0.0
+        
+        byte_counts = [0] * 256
+        for byte in data:
+            byte_counts[byte] += 1
+        
+        entropy = 0.0
+        for count in byte_counts:
+            if count > 0:
+                p = count / len(data)
+                entropy -= p * math.log2(p)
+        
+        return entropy
+    
+    def _check_magic_numbers(self, file_path: Path, known_magics: Optional[List[bytes]] = None) -> bool:
+        """
+        Check if file matches known magic numbers.
+        
+        Args:
+            file_path: Path to file to check
+            known_magics: List of known magic number prefixes (defaults to common ones)
+            
+        Returns:
+            True if file matches a known magic number, False otherwise
+        """
+        if known_magics is None:
+            known_magics = [
+                b'\x89PNG', b'\xff\xd8\xff', b'GIF8', b'%PDF',
+                b'PK\x03\x04', b'\x7fELF', b'MZ', b'\xca\xfe\xba\xbe',
+                b'<?xml', b'<!DOCTYPE', b'{\n', b'#!/'
+            ]
+        
+        try:
+            with open(file_path, 'rb') as f:
+                magic = f.read(16)
+                return any(magic.startswith(m) for m in known_magics)
+        except Exception:
+            return False
+    
+    def _get_known_extensions(self) -> set:
+        """
+        Get set of known file extensions.
+        
+        Returns:
+            Set of known file extensions
+        """
+        return {
+            '.txt', '.log', '.json', '.xml', '.csv', '.html', '.css', '.js',
+            '.py', '.sh', '.pl', '.rb', '.php', '.java', '.cpp', '.c', '.h',
+            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.ico',
+            '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar',
+            '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv',
+            '.db', '.sqlite', '.sql', '.sqlite3',
+            '.exe', '.dll', '.so', '.dylib', '.bin'
+        }
+    
+    def _check_unknown_file_type(self, file_path: Path, file_ext: Optional[str]) -> bool:
+        """
+        Check if file type is unknown (not in known extensions or magic numbers).
+        
+        Args:
+            file_path: Path to file
+            file_ext: File extension (or None)
+            
+        Returns:
+            True if file type is unknown, False otherwise
+        """
+        known_extensions = self._get_known_extensions()
+        
+        # Check extension
+        if file_ext and file_ext in known_extensions:
+            return False
+        
+        # Check magic number
+        return not self._check_magic_numbers(file_path)
+    
+    def _run_format_analyzer(
+        self,
+        file_path: Path,
+        file_ext: str,
+        scan_results: Dict[str, Any]
+    ) -> Tuple[Optional[bool], List[str], Dict[str, Any]]:
+        """
+        Run format analyzer on file and update scan results.
+        
+        Args:
+            file_path: Path to file to analyze
+            file_ext: File extension
+            scan_results: Scan results dictionary to update
+            
+        Returns:
+            Tuple of (structure_valid, structure_errors, format_specific_metrics)
+        """
+        from .format_analyzers import get_analyzer_for_file
+        
+        structure_valid = None
+        structure_errors = []
+        format_specific_metrics = {}
+        
+        analyzer = get_analyzer_for_file(file_path)
+        if analyzer:
+            try:
+                logger.debug(f"Running format analyzer for {file_path.name} ({file_ext})")
+                analysis_result = analyzer.analyze(file_path)
+                structure_valid = analysis_result.get('structure_valid')
+                structure_errors = analysis_result.get('structure_errors', [])
+                format_specific_metrics = analysis_result.get('format_specific_metrics', {})
+                
+                # Track format analysis stats
+                if format_specific_metrics:
+                    format_type = file_ext or 'unknown'
+                    if format_type not in scan_results.get('format_analysis_stats', {}):
+                        scan_results.setdefault('format_analysis_stats', {})[format_type] = {
+                            'total': 0,
+                            'valid': 0,
+                            'invalid': 0
+                        }
+                    scan_results['format_analysis_stats'][format_type]['total'] += 1
+                    if structure_valid:
+                        scan_results['format_analysis_stats'][format_type]['valid'] += 1
+                    elif structure_valid is False:
+                        scan_results['format_analysis_stats'][format_type]['invalid'] += 1
+            except Exception as e:
+                logger.debug(f"Format analyzer error for {file_path.name}: {e}")
+                structure_errors.append(f"Analyzer error: {str(e)}")
+        
+        return structure_valid, structure_errors, format_specific_metrics
+    
+    def _get_yara_rules_search_paths(self) -> List[Path]:
+        """
+        Get platform-specific YARA rules search paths.
+        
+        Subclasses should override this to provide platform-specific paths.
+        
+        Returns:
+            List of paths to search for YARA rules
+        """
+        agent_cwd = Path.cwd()
+        agent_file_dir = Path(__file__).parent.parent.parent
+        
+        # Base paths that work on all platforms
+        base_paths = [
+            # Relative to agent code location
+            agent_file_dir / 'rules-master',
+            agent_file_dir.parent / 'rules-master',
+            # Relative to current working directory
+            agent_cwd / 'rules-master',
+            agent_cwd.parent / 'rules-master',
+            agent_cwd.parent.parent / 'rules-master',
+        ]
+        
+        return base_paths
+    
+    async def _scan_with_yara(self, file_path: Path, rules_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Scan file with YARA rules.
+        
+        This method uses platform-specific YARA rules search paths via _get_yara_rules_search_paths().
+        
+        Args:
+            file_path: Path to file to scan
+            rules_dir: Optional explicit rules directory (if None, will search)
+            
+        Returns:
+            List of YARA match dictionaries
+        """
+        import subprocess
+        import asyncio
+        
+        # Check if yara-python is available (but don't fail if it's not)
+        try:
+            import yara
+            yara_python_available = True
+        except ImportError:
+            yara_python_available = False
+            logger.debug("yara-python not available, will use command-line yara")
+        
+        # Find YARA rules directory (needed for both yara-python and command-line)
+        if not rules_dir:
+            # Get platform-specific search paths
+            possible_paths = self._get_yara_rules_search_paths()
+            
+            logger.info(f"🔍 Searching for YARA rules directory in {len(possible_paths)} possible locations...")
+            for path in possible_paths:
+                if path.exists() and (path / 'malware_index.yar').exists():
+                    rules_dir = str(path)
+                    logger.info(f"✅ Found YARA rules directory: {rules_dir}")
+                    break
+                else:
+                    logger.debug(f"   Checked: {path} (exists: {path.exists()}, has malware_index.yar: {(path / 'malware_index.yar').exists() if path.exists() else False})")
+        
+        if not rules_dir:
+            logger.warning("⚠️  YARA rules directory not found, skipping YARA scan")
+            logger.warning(f"   Searched paths: {[str(p) for p in possible_paths]}")
+            logger.warning(f"   Current working directory: {Path.cwd()}")
+            logger.warning(f"   Agent file location: {Path(__file__).parent}")
+            return []
+        
+        logger.info(f"✅ Using YARA rules directory: {rules_dir}")
+        logger.info(f"   malware_index.yar exists: {(Path(rules_dir) / 'malware_index.yar').exists()}")
+        logger.info(f"   packers_index.yar exists: {(Path(rules_dir) / 'packers_index.yar').exists()}")
+        logger.info(f"   Using command-line yara (yara-python: {'available' if yara_python_available else 'not available'})")
+        
+        # Use yara command-line tool for scanning (more reliable than yara-python)
+        # Scan with malware rules
+        malware_rules = Path(rules_dir) / 'malware_index.yar'
+        packer_rules = Path(rules_dir) / 'packers_index.yar'
+        
+        matches = []
+        
+        # Log which rules files we're using
+        logger.debug(f"YARA scanning {file_path.name} with rules from {rules_dir}")
+        logger.debug(f"  malware_index.yar: {malware_rules.exists()}")
+        logger.debug(f"  packers_index.yar: {packer_rules.exists()}")
+        
+        # Scan with malware rules
+        if malware_rules.exists():
+            try:
+                logger.debug(f"Running: yara -s {malware_rules} {file_path}")
+                process = await asyncio.create_subprocess_exec(
+                    'yara', '-s', str(malware_rules), str(file_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+                
+                # Log YARA return code and output for debugging
+                logger.debug(f"YARA return code: {process.returncode}")
+                if stderr:
+                    stderr_text = stderr.decode()
+                    # Only log stderr if it's not just warnings
+                    if 'warning:' not in stderr_text.lower() or len(stderr_text) > 500:
+                        logger.debug(f"YARA stderr: {stderr_text[:200]}")
+                
+                if process.returncode == 0 and stdout:
+                    # Parse YARA output
+                    output = stdout.decode()
+                    logger.debug(f"YARA output for {file_path}: {output[:200] if len(output) > 200 else output}")
+                    for line in output.splitlines():
+                        if line.strip():
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                rule_name = parts[0]
+                                match_info = {
+                                    'rule': rule_name,
+                                    'tags': [],
+                                    'meta': {},
+                                    'file': str(file_path)
+                                }
+                                matches.append(match_info)
+                                logger.warning(f"✅ YARA rule matched: {rule_name} on {file_path.name}")
+                elif stderr:
+                    logger.debug(f"YARA stderr for {file_path}: {stderr.decode()[:200]}")
+            except asyncio.TimeoutError:
+                logger.debug(f"YARA scan timeout for {file_path}")
+            except Exception as e:
+                logger.debug(f"YARA scan error: {e}")
+        
+        # Scan with packer rules
+        if packer_rules.exists():
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    'yara', '-s', str(packer_rules), str(file_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+                
+                if process.returncode == 0 and stdout:
+                    for line in stdout.decode().splitlines():
+                        if line.strip():
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                rule_name = parts[0]
+                                matches.append({
+                                    'rule': rule_name,
+                                    'tags': ['packer'],
+                                    'meta': {},
+                                    'file': str(file_path)
+                                })
+            except Exception:
+                pass
+        
+        return matches
 
