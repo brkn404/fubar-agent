@@ -115,10 +115,11 @@ if ($existingUser) {
         Add-LocalGroupMember -Group $FUBAR_GROUP -Member $FUBAR_USER -ErrorAction Stop
         Write-ColorOutput "[OK] Added $FUBAR_USER to $FUBAR_GROUP group" "Green"
     } catch {
-        if ($_.Exception.Message -like "*already a member*") {
+        $errorMsg = $_.Exception.Message
+        if ($errorMsg -like "*already a member*") {
             Write-ColorOutput "[WARNING]  User is already a member of $FUBAR_GROUP" $WarningColor
         } else {
-            Write-ColorOutput "[WARNING]  Failed to add user to $FUBAR_GROUP: $($_.Exception.Message)" $WarningColor
+            Write-ColorOutput "[WARNING]  Failed to add user to $FUBAR_GROUP: $errorMsg" $WarningColor
         }
     }
 }
@@ -152,7 +153,8 @@ try {
     icacls "$HomeDir" /grant "${FUBAR_USER}:(OI)(CI)F" /T | Out-Null
     Write-ColorOutput "[OK] Set permissions for $FUBAR_USER" "Green"
 } catch {
-    Write-ColorOutput "[WARNING]  Failed to set permissions: $($_.Exception.Message)" $WarningColor
+    $errorMsg = $_.Exception.Message
+    Write-ColorOutput "[WARNING]  Failed to set permissions: $errorMsg" $WarningColor
     Write-ColorOutput "   You may need to set permissions manually" $WarningColor
 }
 
@@ -184,7 +186,8 @@ if (-not $pythonExe) {
             & "$venvPath\Scripts\python.exe" -m pip install --upgrade pip | Out-Null
             Write-ColorOutput "[OK] Upgraded pip" $SuccessColor
         } catch {
-            Write-ColorOutput "[WARNING]  Failed to create virtual environment: $($_.Exception.Message)" $WarningColor
+            $errorMsg = $_.Exception.Message
+            Write-ColorOutput "[WARNING]  Failed to create virtual environment: $errorMsg" $WarningColor
             Write-ColorOutput "   You can create it manually later" $WarningColor
         }
     }
@@ -199,7 +202,8 @@ try {
     cmdkey /add:fubar-server /user:$FUBAR_USER /pass:$Password | Out-Null
     Write-ColorOutput "[OK] Configured Credential Manager" $SuccessColor
 } catch {
-    Write-ColorOutput "[WARNING]  Failed to configure Credential Manager: $($_.Exception.Message)" $WarningColor
+    $errorMsg = $_.Exception.Message
+    Write-ColorOutput "[WARNING]  Failed to configure Credential Manager: $errorMsg" $WarningColor
 }
 
 # Create Windows Service using NSSM (if available) or provide instructions
