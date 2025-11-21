@@ -721,7 +721,13 @@ class BaseAgent:
                 if source_path_str:
                     try:
                         from pathlib import Path
-                        source_path = Path(source_path_str)
+                        import os
+                        # Normalize path for Windows (convert forward slashes to backslashes)
+                        normalized_source = os.path.normpath(source_path_str) if os.name == 'nt' else source_path_str
+                        source_path = Path(normalized_source).resolve()
+                        if not source_path.exists():
+                            # Try original path as fallback
+                            source_path = Path(source_path_str).resolve()
                         if source_path.exists():
                             if source_path.is_file():
                                 file_size = source_path.stat().st_size
@@ -1346,6 +1352,7 @@ class BaseAgent:
     async def _stream_backup_directly(self, job: Dict[str, Any], job_id: UUID) -> Dict[str, Any]:
         """Stream backup directly from source to server without creating local snapshot"""
         from pathlib import Path
+        import os
         
         # Get source path
         source = (
@@ -1356,9 +1363,18 @@ class BaseAgent:
         if not source:
             raise ValueError("No source specified for backup job")
         
-        source_path = Path(source)
+        # Normalize path for Windows (convert forward slashes to backslashes, resolve relative paths)
+        # pathlib.Path handles forward slashes on Windows, but we'll normalize explicitly
+        normalized_source = os.path.normpath(source) if os.name == 'nt' else source
+        source_path = Path(normalized_source).resolve()
+        
         if not source_path.exists():
-            raise ValueError(f"Source path does not exist: {source}")
+            # Try the original path as well in case normalization changed something
+            source_path_alt = Path(source).resolve()
+            if source_path_alt.exists():
+                source_path = source_path_alt
+            else:
+                raise ValueError(f"Source path does not exist: {source} (normalized: {normalized_source}, resolved: {source_path})")
         
         # Prepare metadata for backup streaming
         metadata = {
