@@ -119,7 +119,8 @@ if ($existingUser) {
         if ($errorMsg -like "*already a member*") {
             Write-ColorOutput "[WARNING]  User is already a member of $FUBAR_GROUP" $WarningColor
         } else {
-            Write-ColorOutput "[WARNING]  Failed to add user to $FUBAR_GROUP: $errorMsg" $WarningColor
+            $warningText = "[WARNING]  Failed to add user to $FUBAR_GROUP : $errorMsg"
+            Write-ColorOutput $warningText $WarningColor
         }
     }
 }
@@ -154,7 +155,8 @@ try {
     Write-ColorOutput "[OK] Set permissions for $FUBAR_USER" "Green"
 } catch {
     $errorMsg = $_.Exception.Message
-    Write-ColorOutput "[WARNING]  Failed to set permissions: $errorMsg" $WarningColor
+    $warningText = "[WARNING]  Failed to set permissions: $errorMsg"
+    Write-ColorOutput $warningText $WarningColor
     Write-ColorOutput "   You may need to set permissions manually" $WarningColor
 }
 
@@ -187,7 +189,8 @@ if (-not $pythonExe) {
             Write-ColorOutput "[OK] Upgraded pip" $SuccessColor
         } catch {
             $errorMsg = $_.Exception.Message
-            Write-ColorOutput "[WARNING]  Failed to create virtual environment: $errorMsg" $WarningColor
+            $warningText = "[WARNING]  Failed to create virtual environment: $errorMsg"
+            Write-ColorOutput $warningText $WarningColor
             Write-ColorOutput "   You can create it manually later" $WarningColor
         }
     }
@@ -203,7 +206,8 @@ try {
     Write-ColorOutput "[OK] Configured Credential Manager" $SuccessColor
 } catch {
     $errorMsg = $_.Exception.Message
-    Write-ColorOutput "[WARNING]  Failed to configure Credential Manager: $errorMsg" $WarningColor
+    $warningText = "[WARNING]  Failed to configure Credential Manager: $errorMsg"
+    Write-ColorOutput $warningText $WarningColor
 }
 
 # Create Windows Service using NSSM (if available) or provide instructions
