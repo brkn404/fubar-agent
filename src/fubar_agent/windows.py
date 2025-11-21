@@ -119,7 +119,7 @@ class WindowsAgent(BaseAgent):
                     pass  # File may have been deleted
                 
                 try:
-                    await self._scan_file(file_path, job)
+                await self._scan_file(file_path, job)
                 except Exception as e:
                     logger.debug(f"Error scanning file {file_path}: {e}")
                 scanned += 1
@@ -705,11 +705,231 @@ class WindowsAgent(BaseAgent):
     
     async def _execute_restore_job(self, job: Dict[str, Any]):
         """Execute restore job on Windows - downloads chunks and reassembles files"""
-        # Use same implementation as Linux agent
-        from .linux import LinuxAgent
-        linux_agent = LinuxAgent.__new__(LinuxAgent)
-        linux_agent.session = self.session
-        linux_agent.server_url = self.server_url
-        linux_agent.report_job_status = self.report_job_status
-        await linux_agent._execute_restore_job(job)
+        from uuid import UUID
+        from pathlib import Path
+        import aiofiles
+        
+        job_id = UUID(job["job_id"])
+        
+        try:
+            snapshot_id = job.get("metadata", {}).get("snapshot_id")
+            target = job.get("metadata", {}).get("target")
+            file_paths = job.get("metadata", {}).get("file_paths", [])
+            
+            if not snapshot_id or not target:
+                raise ValueError("Missing snapshot_id or target")
+            
+            await self.report_job_status(job_id, "running", 10, 100, "Initializing restore...")
+            
+            # Find uploads for this backup
+            async with self.session.get(
+                f"{self.server_url}/api/v1/catalog/backups/{snapshot_id}/file-structure"
+            ) as resp:
+                if resp.status != 200:
+                    raise ValueError(f"Failed to get backup file structure: {resp.status}")
+                backup_structure = await resp.json()
+            
+            files = backup_structure.get("files", [])
+            if not files:
+                raise ValueError(f"No files found in backup {snapshot_id}")
+            
+            # Filter files if specific paths requested
+            if file_paths:
+                files = [f for f in files if any(f.get("path", "").endswith(fp.replace("/", "\\")) or f.get("path", "").endswith(fp) for fp in file_paths)]
+            
+            if not files:
+                raise ValueError("No files match restore criteria")
+            
+            await self.report_job_status(job_id, "running", 20, 100, f"Found {len(files)} files to restore")
+            
+            # Handle Windows path conventions
+            target_path = Path(target)
+            if target_path.is_file():
+                target_dir = target_path.parent
+                target_file = target_path.name
+            else:
+                target_dir = target_path
+                target_file = None
+            
+            # Create target directory if it doesn't exist
+            target_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Restore each file
+            for i, file_info in enumerate(files):
+                upload_id = file_info.get("upload_id")
+                filename = file_info.get("filename") or file_info.get("path", "").split("\\")[-1].split("/")[-1]
+                
+                if not upload_id:
+                    logger.warning(f"No upload_id for file {filename}, skipping")
+                    continue
+                
+                progress = 30 + (i * 60 // len(files))
+                await self.report_job_status(job_id, "running", progress, 100, f"Restoring {filename}...")
+                
+                # Try to download finalized file first
+                try:
+                    async with self.session.get(
+                        f"{self.server_url}/api/v1/streaming/restore/{upload_id}/file"
+                    ) as resp:
+                        if resp.status == 200:
+                            # Finalized file exists, download it
+                            dest_path = target_dir / (target_file if target_file and i == 0 else filename)
+                            async with aiofiles.open(dest_path, "wb") as f:
+                                async for chunk in resp.content.iter_chunked(8192):
+                                    await f.write(chunk)
+                            logger.info(f"Downloaded finalized file: {filename}")
+                            
+                            # Restore Windows file attributes if available
+                            await self._restore_file_attributes(dest_path, file_info)
+                            continue
+                except Exception as e:
+                    logger.debug(f"Finalized file not available, will download chunks: {e}")
+                
+                # Download chunks and reassemble
+                async with self.session.get(
+                    f"{self.server_url}/api/v1/streaming/restore/{upload_id}/chunks"
+                ) as resp:
+                    if resp.status != 200:
+                        raise ValueError(f"Failed to get chunks for {upload_id}: {resp.status}")
+                    chunks_info = await resp.json()
+                
+                chunks = chunks_info.get("chunks", [])
+                if not chunks:
+                    raise ValueError(f"No chunks found for upload {upload_id}")
+                
+                logger.info(f"Downloading {len(chunks)} chunks for {filename}")
+                
+                # Download chunks and reassemble
+                dest_path = target_dir / (target_file if target_file and i == 0 else filename)
+                async with aiofiles.open(dest_path, "wb") as outfile:
+                    for chunk_idx, chunk_info in enumerate(chunks):
+                        chunk_num = chunk_info["chunk_number"]
+                        async with self.session.get(
+                            f"{self.server_url}/api/v1/streaming/restore/{upload_id}/chunk/{chunk_num}"
+                        ) as chunk_resp:
+                            if chunk_resp.status != 200:
+                                raise ValueError(f"Failed to download chunk {chunk_num}: {chunk_resp.status}")
+                            async for chunk_data in chunk_resp.content.iter_chunked(8192):
+                                await outfile.write(chunk_data)
+                        
+                        chunk_progress = progress + int((chunk_idx + 1) * (60 / len(files)) / len(chunks))
+                        await self.report_job_status(job_id, "running", chunk_progress, 100, f"Downloading chunk {chunk_idx + 1}/{len(chunks)} of {filename}")
+                
+                logger.info(f"Reassembled {filename} from {len(chunks)} chunks")
+                
+                # Restore Windows file attributes if available
+                await self._restore_file_attributes(dest_path, file_info)
+            
+            await self.report_job_status(job_id, "running", 100, 100, f"Restored {len(files)} files to {target}")
+            logger.info(f"Restore completed: {len(files)} files restored to {target}")
+        
+        except Exception as e:
+            logger.error(f"Restore job failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
+    
+    async def _restore_file_attributes(self, file_path: Path, file_info: Dict[str, Any]):
+        """Restore Windows file attributes (permissions, ACLs, Windows attributes, ADS)"""
+        try:
+            import os
+            import stat
+            import subprocess
+            import platform
+            
+            if platform.system() != "Windows":
+                return  # Only run on Windows
+            
+            # Restore permissions if available
+            permissions = file_info.get("permissions")
+            if permissions:
+                try:
+                    # Convert octal string to mode
+                    if isinstance(permissions, str):
+                        mode = int(permissions, 8)
+                    else:
+                        mode = permissions
+                    os.chmod(file_path, mode)
+                except Exception as e:
+                    logger.debug(f"Failed to restore permissions for {file_path}: {e}")
+            
+            # Restore Windows file attributes (read-only, hidden, system, etc.)
+            windows_attrs = file_info.get("windows_attributes") or file_info.get("attributes")
+            if windows_attrs:
+                try:
+                    import win32api
+                    import win32con
+                    attrs = 0
+                    if windows_attrs.get("readonly"):
+                        attrs |= win32con.FILE_ATTRIBUTE_READONLY
+                    if windows_attrs.get("hidden"):
+                        attrs |= win32con.FILE_ATTRIBUTE_HIDDEN
+                    if windows_attrs.get("system"):
+                        attrs |= win32con.FILE_ATTRIBUTE_SYSTEM
+                    if windows_attrs.get("archive"):
+                        attrs |= win32con.FILE_ATTRIBUTE_ARCHIVE
+                    if windows_attrs.get("compressed"):
+                        attrs |= win32con.FILE_ATTRIBUTE_COMPRESSED
+                    if windows_attrs.get("encrypted"):
+                        attrs |= win32con.FILE_ATTRIBUTE_ENCRYPTED
+                    
+                    if attrs:
+                        win32api.SetFileAttributes(str(file_path), attrs)
+                except ImportError:
+                    logger.debug("win32api not available, skipping Windows attributes")
+                except Exception as e:
+                    logger.debug(f"Failed to restore Windows attributes for {file_path}: {e}")
+            
+            # Also try to restore from attributes_value if available
+            if not windows_attrs and file_info.get("windows_attributes_value") is not None:
+                try:
+                    import win32api
+                    win32api.SetFileAttributes(str(file_path), file_info["windows_attributes_value"])
+                except (ImportError, Exception) as e:
+                    logger.debug(f"Failed to restore Windows attributes from value for {file_path}: {e}")
+            
+            # Restore ACLs if available (requires pywin32)
+            acl_data = file_info.get("acl") or file_info.get("permissions_acl")
+            if acl_data:
+                try:
+                    import win32security
+                    import win32api
+                    
+                    # Parse ACL data and apply
+                    # This is a simplified version - full ACL restoration would be more complex
+                    if isinstance(acl_data, str):
+                        # If ACL is stored as SDDL string, we can apply it directly
+                        sd = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
+                            acl_data, win32security.SDDL_REVISION_1
+                        )
+                        win32security.SetFileSecurity(str(file_path), win32security.DACL_SECURITY_INFORMATION, sd)
+                except ImportError:
+                    logger.debug("win32security not available, skipping ACL restoration")
+                except Exception as e:
+                    logger.debug(f"Failed to restore ACL for {file_path}: {e}")
+            
+            # Restore Alternate Data Streams (ADS) if available
+            ads_data = file_info.get("ads") or file_info.get("alternate_data_streams")
+            if ads_data:
+                try:
+                    # Use PowerShell to restore ADS
+                    for stream_name, stream_content in ads_data.items():
+                        if isinstance(stream_content, str):
+                            stream_content = stream_content.encode('utf-8')
+                        
+                        # Write ADS using PowerShell
+                        ps_cmd = f'''
+                        $content = [System.Convert]::FromBase64String('{stream_content.decode("latin-1") if isinstance(stream_content, bytes) else stream_content}')
+                        Set-Content -Path "{file_path}:{stream_name}" -Value $content -Encoding Byte
+                        '''
+                        subprocess.run(
+                            ["powershell", "-Command", ps_cmd],
+                            check=False,
+                            capture_output=True
+                        )
+                except Exception as e:
+                    logger.debug(f"Failed to restore ADS for {file_path}: {e}")
+        
+        except Exception as e:
+            logger.debug(f"Error restoring file attributes for {file_path}: {e}")
 

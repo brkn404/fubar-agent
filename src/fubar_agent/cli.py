@@ -49,7 +49,7 @@ def cli():
 
 
 @cli.command()
-@click.option("--server-url", prompt="Server URL", help="Central server URL")
+@click.option("--server-url", prompt="Server URL", default="http://localhost:5848", help="Central server URL (default: http://localhost:5848)")
 @click.option("--api-key", prompt="API Key", default="", help="API key for authentication (optional)")
 @click.option("--registration-token", prompt="Registration Token", default="", help="Registration token from host registration (optional)")
 @click.option("--max-concurrent-streams", default=3, help="Maximum concurrent upload streams")

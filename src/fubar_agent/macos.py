@@ -799,11 +799,206 @@ class MacOSAgent(BaseAgent):
     
     async def _execute_restore_job(self, job: Dict[str, Any]):
         """Execute restore job on macOS - downloads chunks and reassembles files"""
-        # Use same implementation as Linux agent
-        from .linux import LinuxAgent
-        linux_agent = LinuxAgent.__new__(LinuxAgent)
-        linux_agent.session = self.session
-        linux_agent.server_url = self.server_url
-        linux_agent.report_job_status = self.report_job_status
-        await linux_agent._execute_restore_job(job)
+        from uuid import UUID
+        from pathlib import Path
+        import aiofiles
+        
+        job_id = UUID(job["job_id"])
+        
+        try:
+            snapshot_id = job.get("metadata", {}).get("snapshot_id")
+            target = job.get("metadata", {}).get("target")
+            file_paths = job.get("metadata", {}).get("file_paths", [])
+            
+            if not snapshot_id or not target:
+                raise ValueError("Missing snapshot_id or target")
+            
+            await self.report_job_status(job_id, "running", 10, 100, "Initializing restore...")
+            
+            # Find uploads for this backup
+            async with self.session.get(
+                f"{self.server_url}/api/v1/catalog/backups/{snapshot_id}/file-structure"
+            ) as resp:
+                if resp.status != 200:
+                    raise ValueError(f"Failed to get backup file structure: {resp.status}")
+                backup_structure = await resp.json()
+            
+            files = backup_structure.get("files", [])
+            if not files:
+                raise ValueError(f"No files found in backup {snapshot_id}")
+            
+            # Filter files if specific paths requested
+            if file_paths:
+                files = [f for f in files if any(f.get("path", "").endswith(fp) for fp in file_paths)]
+            
+            if not files:
+                raise ValueError("No files match restore criteria")
+            
+            await self.report_job_status(job_id, "running", 20, 100, f"Found {len(files)} files to restore")
+            
+            # Handle macOS path conventions
+            target_path = Path(target)
+            if target_path.is_file():
+                target_dir = target_path.parent
+                target_file = target_path.name
+            else:
+                target_dir = target_path
+                target_file = None
+            
+            # Create target directory if it doesn't exist
+            target_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Restore each file
+            for i, file_info in enumerate(files):
+                upload_id = file_info.get("upload_id")
+                filename = file_info.get("filename") or file_info.get("path", "").split("/")[-1]
+                
+                if not upload_id:
+                    logger.warning(f"No upload_id for file {filename}, skipping")
+                    continue
+                
+                progress = 30 + (i * 60 // len(files))
+                await self.report_job_status(job_id, "running", progress, 100, f"Restoring {filename}...")
+                
+                # Try to download finalized file first
+                try:
+                    async with self.session.get(
+                        f"{self.server_url}/api/v1/streaming/restore/{upload_id}/file"
+                    ) as resp:
+                        if resp.status == 200:
+                            # Finalized file exists, download it
+                            dest_path = target_dir / (target_file if target_file and i == 0 else filename)
+                            async with aiofiles.open(dest_path, "wb") as f:
+                                async for chunk in resp.content.iter_chunked(8192):
+                                    await f.write(chunk)
+                            logger.info(f"Downloaded finalized file: {filename}")
+                            
+                            # Restore macOS file attributes if available
+                            await self._restore_file_attributes(dest_path, file_info)
+                            continue
+                except Exception as e:
+                    logger.debug(f"Finalized file not available, will download chunks: {e}")
+                
+                # Download chunks and reassemble
+                async with self.session.get(
+                    f"{self.server_url}/api/v1/streaming/restore/{upload_id}/chunks"
+                ) as resp:
+                    if resp.status != 200:
+                        raise ValueError(f"Failed to get chunks for {upload_id}: {resp.status}")
+                    chunks_info = await resp.json()
+                
+                chunks = chunks_info.get("chunks", [])
+                if not chunks:
+                    raise ValueError(f"No chunks found for upload {upload_id}")
+                
+                logger.info(f"Downloading {len(chunks)} chunks for {filename}")
+                
+                # Download chunks and reassemble
+                dest_path = target_dir / (target_file if target_file and i == 0 else filename)
+                async with aiofiles.open(dest_path, "wb") as outfile:
+                    for chunk_idx, chunk_info in enumerate(chunks):
+                        chunk_num = chunk_info["chunk_number"]
+                        async with self.session.get(
+                            f"{self.server_url}/api/v1/streaming/restore/{upload_id}/chunk/{chunk_num}"
+                        ) as chunk_resp:
+                            if chunk_resp.status != 200:
+                                raise ValueError(f"Failed to download chunk {chunk_num}: {chunk_resp.status}")
+                            async for chunk_data in chunk_resp.content.iter_chunked(8192):
+                                await outfile.write(chunk_data)
+                        
+                        chunk_progress = progress + int((chunk_idx + 1) * (60 / len(files)) / len(chunks))
+                        await self.report_job_status(job_id, "running", chunk_progress, 100, f"Downloading chunk {chunk_idx + 1}/{len(chunks)} of {filename}")
+                
+                logger.info(f"Reassembled {filename} from {len(chunks)} chunks")
+                
+                # Restore macOS file attributes if available
+                await self._restore_file_attributes(dest_path, file_info)
+            
+            await self.report_job_status(job_id, "running", 100, 100, f"Restored {len(files)} files to {target}")
+            logger.info(f"Restore completed: {len(files)} files restored to {target}")
+        
+        except Exception as e:
+            logger.error(f"Restore job failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
+    
+    async def _restore_file_attributes(self, file_path: Path, file_info: Dict[str, Any]):
+        """Restore macOS file attributes (owner, group, permissions, xattr)"""
+        try:
+            import os
+            import stat
+            import subprocess
+            
+            # Restore permissions if available
+            permissions = file_info.get("permissions")
+            if permissions:
+                try:
+                    # Convert octal string to mode
+                    if isinstance(permissions, str):
+                        mode = int(permissions, 8)
+                    else:
+                        mode = permissions
+                    os.chmod(file_path, mode)
+                except Exception as e:
+                    logger.debug(f"Failed to restore permissions for {file_path}: {e}")
+            
+            # Restore owner/group if available (requires appropriate permissions)
+            owner = file_info.get("owner")
+            group = file_info.get("group")
+            if owner or group:
+                try:
+                    # Use chown command (requires appropriate permissions)
+                    chown_args = []
+                    if owner and group:
+                        chown_args = [f"{owner}:{group}"]
+                    elif owner:
+                        chown_args = [owner]
+                    elif group:
+                        chown_args = [f":{group}"]
+                    
+                    if chown_args:
+                        subprocess.run(
+                            ["chown"] + chown_args + [str(file_path)],
+                            check=False,  # Don't fail if we don't have permissions
+                            capture_output=True
+                        )
+                except Exception as e:
+                    logger.debug(f"Failed to restore owner/group for {file_path}: {e}")
+            
+            # Restore extended attributes if available
+            xattr_data = file_info.get("xattr") or file_info.get("extended_attributes")
+            if xattr_data:
+                try:
+                    import xattr
+                    import base64
+                    for attr_name, attr_value in xattr_data.items():
+                        # Decode base64 if it's a string (as stored by capture)
+                        if isinstance(attr_value, str):
+                            try:
+                                attr_value = base64.b64decode(attr_value)
+                            except Exception:
+                                # If not base64, treat as UTF-8 string
+                                attr_value = attr_value.encode('utf-8')
+                        elif not isinstance(attr_value, bytes):
+                            attr_value = str(attr_value).encode('utf-8')
+                        xattr.setxattr(file_path, attr_name, attr_value)
+                except ImportError:
+                    logger.debug("xattr module not available, skipping extended attributes")
+                except Exception as e:
+                    logger.debug(f"Failed to restore xattr for {file_path}: {e}")
+            
+            # Restore macOS-specific metadata if available
+            finder_info = file_info.get("finder_info")
+            if finder_info:
+                try:
+                    import xattr
+                    import base64
+                    finder_info_bytes = base64.b64decode(finder_info)
+                    xattr.setxattr(file_path, "com.apple.FinderInfo", finder_info_bytes)
+                except (ImportError, Exception) as e:
+                    logger.debug(f"Failed to restore Finder info for {file_path}: {e}")
+        
+        except Exception as e:
+            logger.debug(f"Error restoring file attributes for {file_path}: {e}")
 
