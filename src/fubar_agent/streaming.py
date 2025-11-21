@@ -166,14 +166,14 @@ class StreamUploader:
                                 if chunk_num % 10 == 0 or active == self.config.max_concurrent_chunks:
                                     logger.info(f"Uploading chunk {chunk_num}/{total_chunks} ({active} concurrent chunks active)")
                                 
-                        # Apply bandwidth limiting
-                        if self.config.bandwidth_limit:
+                                # Apply bandwidth limiting
+                                if self.config.bandwidth_limit:
                                     await self._throttle_bandwidth(len(chunk_data))
-                        
-                        # Upload chunk
-                        await self._upload_chunk(
-                            endpoint,
-                            upload_id,
+                                
+                                # Upload chunk
+                                await self._upload_chunk(
+                                    endpoint,
+                                    upload_id,
                                     chunk_num,
                                     chunk_data,
                                     is_first,
@@ -215,11 +215,11 @@ class StreamUploader:
                                 chunk_size = await task
                                 uploaded_bytes += chunk_size
                                 completed_chunks += 1
-                        
-                        # Progress callback
-                        if self.progress_callback:
+                                
+                                # Progress callback
+                                if self.progress_callback:
                                     self.progress_callback(uploaded_bytes, file_size)
-                    
+                                
                                 # Log progress every 10% or every 10 chunks
                                 if completed_chunks % max(10, total_chunks // 10) == 0:
                                     percent = (uploaded_bytes / file_size) * 100
@@ -307,11 +307,11 @@ class StreamUploader:
         max_retries = 3
         for retry in range(max_retries):
             try:
-        async with self.session.post(
-            f"{self.server_url}{endpoint}/chunk",
+                async with self.session.post(
+                    f"{self.server_url}{endpoint}/chunk",
                     data=form_data,
                     timeout=aiohttp.ClientTimeout(total=60)  # 60 second timeout per chunk
-        ) as resp:
+                ) as resp:
                     if resp.status == 200:
                         return  # Success
                     elif resp.status >= 500:
