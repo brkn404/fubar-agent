@@ -98,6 +98,16 @@ class StreamUploader:
             metadata = {}
         metadata["hash_algorithm"] = "sha256"
         
+        # Capture file attributes if not already in metadata
+        if "owner" not in metadata and "permissions" not in metadata:
+            try:
+                from .file_attributes import capture_file_attributes
+                captured_attrs = capture_file_attributes(file_path)
+                metadata.update(captured_attrs)
+            except Exception as e:
+                import logging
+                logging.debug(f"Failed to capture file attributes for {file_path}: {e}")
+        
         uploaded = 0
         
         for attempt in range(self.config.retry_attempts):
@@ -119,14 +129,14 @@ class StreamUploader:
                     async def chunk_reader():
                         """Producer: Read chunks from file and put them in queue."""
                         nonlocal read_error, sha256_hash
-                    chunk_number = 0
+                        chunk_number = 0
                         total_read = 0
                         try:
                             while total_read < file_size:
-                        chunk = await f.read(self.config.chunk_size)
-                        if not chunk:
-                            break
-                        
+                                chunk = await f.read(self.config.chunk_size)
+                                if not chunk:
+                                    break
+                                
                                 # Update hash as we read chunks
                                 sha256_hash.update(chunk)
                                 
@@ -411,85 +421,11 @@ class StreamUploader:
             file_metadata["relative_path"] = str(relative_path)
             file_metadata["original_filename"] = file_path.name
             
-            # Capture file attributes (owner, group, permissions)
+            # Capture file attributes using platform-specific capture
             try:
-                stat = file_path.stat()
-                import platform
-                if platform.system() != "Windows":
-                    # Unix/Linux/macOS attributes
-                    import pwd
-                    import grp
-                    try:
-                        owner_info = pwd.getpwuid(stat.st_uid)
-                        file_metadata["owner"] = owner_info.pw_name
-                        file_metadata["owner_uid"] = stat.st_uid
-                    except (KeyError, OSError):
-                        file_metadata["owner"] = f"uid:{stat.st_uid}"
-                        file_metadata["owner_uid"] = stat.st_uid
-                    
-                    try:
-                        group_info = grp.getgrgid(stat.st_gid)
-                        file_metadata["group"] = group_info.gr_name
-                        file_metadata["group_gid"] = stat.st_gid
-                    except (KeyError, OSError):
-                        file_metadata["group"] = f"gid:{stat.st_gid}"
-                        file_metadata["group_gid"] = stat.st_gid
-                    
-                    # Permissions (octal and symbolic)
-                    file_metadata["permissions"] = oct(stat.st_mode)[-3:]
-                    file_metadata["permissions_mode"] = stat.st_mode
-                    # Symbolic permissions (rwx format)
-                    mode = stat.st_mode
-                    perms = []
-                    for who in ["owner", "group", "other"]:
-                        for perm in ["read", "write", "execute"]:
-                            perms.append(perm if mode & (0o400 if perm == "read" else 0o200 if perm == "write" else 0o100) else "-")
-                    file_metadata["permissions_symbolic"] = "".join([
-                        "r" if mode & 0o400 else "-",
-                        "w" if mode & 0o200 else "-",
-                        "x" if mode & 0o100 else "-",
-                        "r" if mode & 0o040 else "-",
-                        "w" if mode & 0o020 else "-",
-                        "x" if mode & 0o010 else "-",
-                        "r" if mode & 0o004 else "-",
-                        "w" if mode & 0o002 else "-",
-                        "x" if mode & 0o001 else "-",
-                    ])
-                else:
-                    # Windows attributes
-                    try:
-                        import win32security
-                        import win32api
-                        try:
-                            sd = win32security.GetFileSecurity(str(file_path), win32security.OWNER_SECURITY_INFORMATION)
-                            owner_sid = sd.GetSecurityDescriptorOwner()
-                            owner_name, domain, _ = win32security.LookupAccountSid(None, owner_sid)
-                            file_metadata["owner"] = f"{domain}\\{owner_name}" if domain else owner_name
-                            file_metadata["owner_sid"] = str(owner_sid)
-                        except Exception:
-                            pass
-                        
-                        try:
-                            sd = win32security.GetFileSecurity(str(file_path), win32security.GROUP_SECURITY_INFORMATION)
-                            group_sid = sd.GetSecurityDescriptorGroup()
-                            group_name, domain, _ = win32security.LookupAccountSid(None, group_sid)
-                            file_metadata["group"] = f"{domain}\\{group_name}" if domain else group_name
-                            file_metadata["group_sid"] = str(group_sid)
-                        except Exception:
-                            pass
-                        
-                        # Windows file attributes
-                        attrs = win32api.GetFileAttributes(str(file_path))
-                        attr_flags = []
-                        if attrs & 0x1: attr_flags.append("READONLY")
-                        if attrs & 0x2: attr_flags.append("HIDDEN")
-                        if attrs & 0x4: attr_flags.append("SYSTEM")
-                        if attrs & 0x20: attr_flags.append("ARCHIVE")
-                        file_metadata["attributes"] = ",".join(attr_flags) if attr_flags else "NORMAL"
-                        file_metadata["attributes_value"] = attrs
-                    except ImportError:
-                        # win32security not available, skip Windows-specific attributes
-                        pass
+                from .file_attributes import capture_file_attributes
+                captured_attrs = capture_file_attributes(file_path)
+                file_metadata.update(captured_attrs)
             except Exception as e:
                 import logging
                 logging.warning(f"Failed to capture file attributes for {file_path}: {e}")
