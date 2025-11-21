@@ -27,6 +27,7 @@ setup(
         "aiofiles>=23.0.0",
         "click>=8.0.0",
         "pyyaml>=6.0",
+        "psutil>=5.9.0",
     ],
     extras_require={
         "macos": [
