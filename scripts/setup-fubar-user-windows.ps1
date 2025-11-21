@@ -116,9 +116,9 @@ if ($existingUser) {
         Write-ColorOutput "✅ Added $FUBAR_USER to $FUBAR_GROUP group" "Green"
     } catch {
         if ($_.Exception.Message -like "*already a member*") {
-            Write-ColorOutput "⚠️  User is already a member of $FUBAR_GROUP" "Warning"
+            Write-ColorOutput "⚠️  User is already a member of $FUBAR_GROUP" $WarningColor
         } else {
-            Write-ColorOutput "⚠️  Failed to add user to $FUBAR_GROUP: $($_.Exception.Message)" "Warning"
+            Write-ColorOutput "⚠️  Failed to add user to $FUBAR_GROUP: $($_.Exception.Message)" $WarningColor
         }
     }
 }
@@ -152,8 +152,8 @@ try {
     icacls "$HomeDir" /grant "${FUBAR_USER}:(OI)(CI)F" /T | Out-Null
     Write-ColorOutput "✅ Set permissions for $FUBAR_USER" "Green"
 } catch {
-    Write-ColorOutput "⚠️  Failed to set permissions: $($_.Exception.Message)" "Warning"
-    Write-ColorOutput "   You may need to set permissions manually" "Yellow"
+    Write-ColorOutput "⚠️  Failed to set permissions: $($_.Exception.Message)" $WarningColor
+    Write-ColorOutput "   You may need to set permissions manually" $WarningColor
 }
 
 # Create Python virtual environment
@@ -253,6 +253,6 @@ Write-ColorOutput "   Password: $Password" "Yellow"
 Write-ColorOutput "   Group: $FUBAR_GROUP" "Yellow"
 Write-Host ""
 Write-ColorOutput "⚠️  IMPORTANT: Save the password securely!" $WarningColor
-Write-ColorOutput "   You'll need it to configure the service account" $WarningColor
+Write-ColorOutput "   You will need it to configure the service account" $WarningColor
 Write-Host ""
 
