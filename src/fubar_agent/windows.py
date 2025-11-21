@@ -653,21 +653,14 @@ class WindowsAgent(BaseAgent):
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         
         # Use robocopy for backup on Windows
-        cmd = [
-            "robocopy",
-            source,
-            str(snapshot_dir),
-            "/E",  # Copy subdirectories
-            "/R:3",  # Retry 3 times
-            "/W:1",  # Wait 1 second between retries
-            "/NP",  # No progress (for automation)
-        ]
+        # On Windows, robocopy is a built-in command, so we use create_subprocess_shell
+        # to ensure it's found in PATH
+        cmd = f'robocopy "{source}" "{snapshot_dir}" /E /R:3 /W:1 /NP'
         
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
+        process = await asyncio.create_subprocess_shell(
+            cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            shell=True
+            stderr=asyncio.subprocess.PIPE
         )
         
         await process.wait()
