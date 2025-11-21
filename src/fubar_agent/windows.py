@@ -119,7 +119,7 @@ class WindowsAgent(BaseAgent):
                     pass  # File may have been deleted
                 
                 try:
-                await self._scan_file(file_path, job)
+                    await self._scan_file(file_path, job)
                 except Exception as e:
                     logger.debug(f"Error scanning file {file_path}: {e}")
                 scanned += 1
