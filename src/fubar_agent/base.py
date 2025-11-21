@@ -474,7 +474,7 @@ class BaseAgent:
             logger.debug(f"Could not get git version: {e}")
         # Fallback to package version
         try:
-            from unified_pipeline import __version__
+            from .version import __version__
             return __version__
         except ImportError:
             return "unknown"
@@ -1056,7 +1056,7 @@ class BaseAgent:
             logger.debug(f"Relative import failed: {e}, trying absolute import")
             try:
                 # Try absolute import
-                from unified_pipeline.agent.discovery import discover_databases, discover_vms, discover_filesystems
+                from .discovery import discover_databases, discover_vms, discover_filesystems
                 logger.debug("Discovery module imported successfully via absolute import")
             except (ImportError, ModuleNotFoundError, AttributeError) as e2:
                 # Fallback if discovery module not available
@@ -1290,7 +1290,7 @@ class BaseAgent:
             possible_log_dirs = [
                 Path("logs"),
                 Path(".") / "logs",
-                Path.home() / ".unified_pipeline" / "logs",
+                Path.home() / ".fubar_agent" / "logs",
             ]
             
             log_dir = None

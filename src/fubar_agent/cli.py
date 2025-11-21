@@ -172,7 +172,7 @@ def _install_macos_service(config_file: str, service_name: str):
     python_exe = sys.executable
     
     # Get agent script path
-    import unified_pipeline.agent.cli as agent_cli_module
+    import fubar_agent.cli as agent_cli_module
     agent_script = Path(agent_cli_module.__file__)
     
     # Create plist file
@@ -239,7 +239,7 @@ def _install_linux_service(config_file: str, service_name: str):
     python_exe = sys.executable
     
     # Get agent script path
-    import unified_pipeline.agent.cli as agent_cli_module
+    import fubar_agent.cli as agent_cli_module
     agent_script = Path(agent_cli_module.__file__)
     
     # Create systemd service file
@@ -328,7 +328,7 @@ def sync(config_file: str):
         async with aiohttp.ClientSession() as session:
             # Check current version
             try:
-                from unified_pipeline import __version__
+                from .version import __version__
                 current_version = __version__
             except ImportError:
                 current_version = "unknown"
@@ -428,7 +428,7 @@ def sync(config_file: str):
                 
                 click.echo("")
                 click.echo("Restart the agent to use the new code:")
-                click.echo(f"  python3 -m unified_pipeline.agent.cli start --config-file {config_file}")
+                click.echo(f"  python3 -m fubar_agent.cli start --config-file {config_file}")
     
     asyncio.run(sync_code())
 
@@ -520,7 +520,7 @@ def version():
             if discovery_path.exists() and (discovery_path / "__init__.py").exists():
                 # Try to import
                 try:
-                    from unified_pipeline.agent.discovery import discover_databases
+                    from .discovery import discover_databases
                     discovery_status = "available"
                 except (ImportError, ModuleNotFoundError):
                     discovery_status = "directory exists but import failed"
