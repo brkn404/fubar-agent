@@ -555,18 +555,22 @@ class LinuxAgent(BaseAgent):
                 is_malware_suspicious = False
                 malware_reasons = []
                 
+                logger.debug(f"🔍 Checking malware indicators for {file.name}: file_ext={file_ext}, os.name={os.name}")
+                
                 # YARA matches are high-confidence malware indicators
                 if yara_matches:
                     is_malware_suspicious = True
                     rule_names = [m.get('rule', 'unknown') for m in yara_matches]
                     malware_reasons.append(f'YARA rule match: {", ".join(rule_names[:3])}')  # Limit to first 3
-                    logger.debug(f"🔍 YARA match triggered quarantine for: {file}")
+                    logger.warning(f"🚨 YARA match triggered quarantine for: {file}")
                 
                 # High-risk indicators
                 if file_ext == '.exe' and os.name != 'nt':
                     is_malware_suspicious = True
                     malware_reasons.append('Windows executable on Linux')
                     logger.warning(f"🚨 Windows exe on Linux triggered quarantine for: {file} (os.name={os.name}, file_ext={file_ext})")
+                else:
+                    logger.debug(f"   Not triggering quarantine: file_ext={file_ext}, os.name={os.name}, condition={file_ext == '.exe' and os.name != 'nt'}")
                 
                 if file_ext in {'.exe', '.dll', '.bat', '.cmd', '.scr', '.vbs', '.ps1'}:
                     file_str = str(file)
