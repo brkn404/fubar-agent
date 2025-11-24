@@ -2194,27 +2194,30 @@ class BaseAgent:
         if malware_rules.exists():
             try:
                 logger.debug(f"Running: yara -s {malware_rules} {file_path}")
-                # Try yara command first, if it fails with permission error, try with sudo
-                try:
-                    process = await asyncio.create_subprocess_exec(
-                        'yara', '-s', str(malware_rules), str(file_path),
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                except PermissionError:
-                    # If permission denied, try with sudo
-                    logger.debug(f"Permission denied, trying with sudo: sudo yara -s {malware_rules} {file_path}")
+                # Try yara command first
+                process = await asyncio.create_subprocess_exec(
+                    'yara', '-s', str(malware_rules), str(file_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+                
+                # Check if yara failed due to permission error
+                stderr_text = stderr.decode() if stderr else ""
+                if process.returncode != 0 and ('permission denied' in stderr_text.lower() or 'cannot open' in stderr_text.lower()):
+                    # Retry with sudo
+                    logger.debug(f"Permission denied, retrying with sudo: sudo yara -s {malware_rules} {file_path}")
                     process = await asyncio.create_subprocess_exec(
                         'sudo', 'yara', '-s', str(malware_rules), str(file_path),
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE
                     )
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+                    stderr_text = stderr.decode() if stderr else ""
                 
                 # Log YARA return code and output for debugging
                 logger.debug(f"YARA return code: {process.returncode}")
-                if stderr:
-                    stderr_text = stderr.decode()
+                if stderr_text:
                     # Only log stderr if it's not just warnings
                     if 'warning:' not in stderr_text.lower() or len(stderr_text) > 500:
                         logger.debug(f"YARA stderr: {stderr_text[:200]}")
