@@ -372,11 +372,20 @@ class BaseAgent:
             agent_path = Path(__file__).parent
             backup_path = agent_path.parent / f"agent_backup_{current_version}"
             
-            # Backup current code
+            # Backup current code (excluding platform.py files that shadow Python's built-in module)
             if agent_path.exists():
                 if backup_path.exists():
                     shutil.rmtree(backup_path)
-                shutil.copytree(agent_path, backup_path)
+                backup_path.mkdir(parents=True, exist_ok=True)
+                # Copy files but exclude platform.py
+                for item in agent_path.iterdir():
+                    if item.name == "platform.py":
+                        logger.debug(f"Skipping {item.name} in backup (shadows built-in module)")
+                        continue
+                    if item.is_dir():
+                        shutil.copytree(item, backup_path / item.name, ignore=shutil.ignore_patterns("platform.py", "__pycache__", "*.pyc"))
+                    else:
+                        shutil.copy2(item, backup_path / item.name)
                 logger.info(f"Backed up current code to {backup_path}")
             
             # Extract new code
