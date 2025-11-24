@@ -301,8 +301,21 @@ class LinuxAgent(BaseAgent):
         from datetime import datetime
         
         file = Path(file_path)
-        if not file.exists():
-            return
+        
+        # Check if file exists (using sudo if needed)
+        try:
+            if not file.exists():
+                return
+        except PermissionError:
+            # Try with sudo to check existence
+            import subprocess
+            result = subprocess.run(
+                ["sudo", "test", "-e", str(file)],
+                capture_output=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                return  # File doesn't exist or can't access
         
         # Get job configuration (check both job dict and metadata)
         job_metadata = job.get("metadata", {})
@@ -334,8 +347,31 @@ class LinuxAgent(BaseAgent):
             }
         
         try:
-            file_stat = file.stat()
-            file_size = file_stat.st_size
+            # Try to get file stat (using sudo if needed)
+            try:
+                file_stat = file.stat()
+                file_size = file_stat.st_size
+            except PermissionError:
+                # If permission denied, try with sudo stat
+                import subprocess
+                result = subprocess.run(
+                    ["sudo", "stat", "-c", "%s", str(file)],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    file_size = int(result.stdout.strip())
+                    # Create a mock stat object for compatibility
+                    class MockStat:
+                        def __init__(self, size):
+                            self.st_size = size
+                            self.st_mode = 0o644  # Default permissions
+                    file_stat = MockStat(file_size)
+                else:
+                    logger.warning(f"⚠️  Cannot access file {file}: {result.stderr}")
+                    return
+            
             file_ext = file.suffix.lower()
             
             # Track file types
