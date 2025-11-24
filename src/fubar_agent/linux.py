@@ -566,7 +566,7 @@ class LinuxAgent(BaseAgent):
                 if file_ext == '.exe' and os.name != 'nt':
                     is_malware_suspicious = True
                     malware_reasons.append('Windows executable on Linux')
-                    logger.debug(f"🔍 Windows exe on Linux triggered quarantine for: {file}")
+                    logger.warning(f"🚨 Windows exe on Linux triggered quarantine for: {file} (os.name={os.name}, file_ext={file_ext})")
                 
                 if file_ext in {'.exe', '.dll', '.bat', '.cmd', '.scr', '.vbs', '.ps1'}:
                     file_str = str(file)
@@ -577,7 +577,7 @@ class LinuxAgent(BaseAgent):
                 
                 # Debug: Log if file should be quarantined but isn't
                 if file_ext == '.exe' and os.name != 'nt' and not is_malware_suspicious:
-                    logger.warning(f"⚠️  Windows exe on Linux NOT quarantined: {file} (is_malware_suspicious={is_malware_suspicious})")
+                    logger.error(f"❌ Windows exe on Linux NOT quarantined: {file} (is_malware_suspicious={is_malware_suspicious}, os.name={os.name}, file_ext={file_ext})")
                 
                 # Check for high entropy (potential encryption/packing) - using shared method
                 try:
