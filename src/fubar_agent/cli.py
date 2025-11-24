@@ -19,7 +19,7 @@ import yaml
 import aiohttp
 
 from .base import BaseAgent
-from .platform import detect_platform
+from .platform_detection import detect_platform
 from .macos import MacOSAgent
 from .windows import WindowsAgent
 from .linux import LinuxAgent

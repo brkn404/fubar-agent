@@ -6,7 +6,7 @@ Connects to central API server and executes jobs locally.
 """
 
 from .base import BaseAgent
-from .platform import detect_platform, PlatformInfo
+from .platform_detection import detect_platform, PlatformInfo
 from .macos import MacOSAgent
 from .windows import WindowsAgent
 from .linux import LinuxAgent

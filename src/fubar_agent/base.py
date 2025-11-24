@@ -15,7 +15,7 @@ from uuid import UUID
 
 import aiohttp
 
-from .platform import detect_platform, PlatformInfo
+from .platform_detection import detect_platform, PlatformInfo
 
 logger = logging.getLogger(__name__)
 
