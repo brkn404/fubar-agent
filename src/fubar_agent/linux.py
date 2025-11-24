@@ -300,13 +300,22 @@ class LinuxAgent(BaseAgent):
         if not file.exists():
             return
         
-        # Get job configuration
-        enable_heuristic = job.get("enable_heuristic", True)
-        enable_yara = job.get("enable_yara", False)
-        enable_virustotal = job.get("enable_virustotal", False)
-        enable_ai_filter_creator = job.get("enable_ai_filter_creator", False)
-        analyzers = job.get("analyzers", [])
-        yara_rules_dir = job.get("yara_rules_dir") or job.get("metadata", {}).get("yara_rules_dir")
+        # Get job configuration (check both job dict and metadata)
+        job_metadata = job.get("metadata", {})
+        enable_heuristic = job.get("enable_heuristic") or job_metadata.get("enable_heuristic") or job_metadata.get("enableHeuristic")
+        if enable_heuristic is None:
+            enable_heuristic = True  # Default to True
+        enable_yara = job.get("enable_yara") or job_metadata.get("enable_yara") or job_metadata.get("enableYara")
+        if enable_yara is None:
+            enable_yara = False  # Default to False
+        enable_virustotal = job.get("enable_virustotal") or job_metadata.get("enable_virustotal") or job_metadata.get("enableVirustotal")
+        if enable_virustotal is None:
+            enable_virustotal = False
+        enable_ai_filter_creator = job.get("enable_ai_filter_creator") or job_metadata.get("enable_ai_filter_creator") or job_metadata.get("enableAiFilterCreator")
+        if enable_ai_filter_creator is None:
+            enable_ai_filter_creator = False
+        analyzers = job.get("analyzers") or job_metadata.get("analyzers", [])
+        yara_rules_dir = job.get("yara_rules_dir") or job_metadata.get("yara_rules_dir")
         
         # Initialize scan results at the start of scanning (before first file)
         # This ensures _scan_results exists even if no files are scanned
