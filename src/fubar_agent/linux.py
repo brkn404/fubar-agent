@@ -142,8 +142,20 @@ class LinuxAgent(BaseAgent):
                 try:
                     file_stat = Path(file_path).stat()
                     total_size += file_stat.st_size
-                except (OSError, FileNotFoundError):
-                    pass  # File may have been deleted
+                except (OSError, FileNotFoundError, PermissionError):
+                    # If permission denied, try with sudo stat
+                    try:
+                        import subprocess
+                        result = subprocess.run(
+                            ["sudo", "stat", "-c", "%s", file_path],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            total_size += int(result.stdout.strip())
+                    except Exception:
+                        pass  # File may have been deleted or inaccessible
                 
                 try:
                     await self._scan_file(file_path, job)
@@ -236,10 +248,28 @@ class LinuxAgent(BaseAgent):
             stderr=asyncio.subprocess.PIPE
         )
         
-        stdout, _ = await process.communicate()
+        stdout, stderr = await process.communicate()
         
         if process.returncode == 0:
             return [line.decode().strip() for line in stdout.splitlines() if line.strip()]
+        
+        # If permission denied, try with sudo
+        if process.returncode != 0 and b"Permission denied" in stderr:
+            logger.warning(f"Permission denied accessing {path}, using sudo find...")
+            cmd = ["sudo", "find", path, "-type", "f"]
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode == 0:
+                return [line.decode().strip() for line in stdout.splitlines() if line.strip()]
+            else:
+                raise PermissionError(f"Cannot access directory {path}: {stderr.decode()}")
         
         # Fallback to recursive
         return await self._discover_files_recursive(path)
