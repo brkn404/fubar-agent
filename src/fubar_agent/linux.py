@@ -158,9 +158,13 @@ class LinuxAgent(BaseAgent):
                         pass  # File may have been deleted or inaccessible
                 
                 try:
+                    logger.info(f"🔍 Scanning file: {file_path}")
                     await self._scan_file(file_path, job)
+                    logger.debug(f"✅ Completed scanning: {file_path}")
                 except Exception as e:
-                    logger.debug(f"Error scanning file {file_path}: {e}")
+                    import traceback
+                    logger.error(f"❌ Error scanning file {file_path}: {e}")
+                    logger.error(f"   Traceback: {traceback.format_exc()}")
                 scanned += 1
                 
                 # Log progress every 50 files
