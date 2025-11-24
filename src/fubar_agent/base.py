@@ -2159,12 +2159,43 @@ class BaseAgent:
             
             logger.info(f"🔍 Searching for YARA rules directory in {len(possible_paths)} possible locations...")
             for path in possible_paths:
-                if path.exists() and (path / 'malware_index.yar').exists():
-                    rules_dir = str(path)
-                    logger.info(f"✅ Found YARA rules directory: {rules_dir}")
-                    break
+                # Check if path exists (handle PermissionError)
+                path_exists = False
+                try:
+                    path_exists = path.exists()
+                except PermissionError:
+                    # Path exists but we can't access it - try with sudo test
+                    import subprocess
+                    result = subprocess.run(
+                        ["sudo", "test", "-d", str(path)],
+                        capture_output=True,
+                        timeout=5
+                    )
+                    path_exists = (result.returncode == 0)
+                
+                if path_exists:
+                    # Check if malware_index.yar exists (handle PermissionError)
+                    malware_index_exists = False
+                    try:
+                        malware_index_exists = (path / 'malware_index.yar').exists()
+                    except PermissionError:
+                        # Try with sudo test
+                        import subprocess
+                        result = subprocess.run(
+                            ["sudo", "test", "-f", str(path / 'malware_index.yar')],
+                            capture_output=True,
+                            timeout=5
+                        )
+                        malware_index_exists = (result.returncode == 0)
+                    
+                    if malware_index_exists:
+                        rules_dir = str(path)
+                        logger.info(f"✅ Found YARA rules directory: {rules_dir}")
+                        break
+                    else:
+                        logger.debug(f"   Checked: {path} (exists: True, has malware_index.yar: False)")
                 else:
-                    logger.debug(f"   Checked: {path} (exists: {path.exists()}, has malware_index.yar: {(path / 'malware_index.yar').exists() if path.exists() else False})")
+                    logger.debug(f"   Checked: {path} (exists: False)")
         
         if not rules_dir:
             logger.warning("⚠️  YARA rules directory not found, skipping YARA scan")

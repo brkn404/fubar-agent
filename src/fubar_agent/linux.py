@@ -644,9 +644,24 @@ class LinuxAgent(BaseAgent):
                         
                         # Generate unique filename with timestamp and hash
                         file_hash = hashlib.sha256()
-                        with open(file, 'rb') as f:
-                            for chunk in iter(lambda: f.read(4096), b""):
-                                file_hash.update(chunk)
+                        try:
+                            with open(file, 'rb') as f:
+                                for chunk in iter(lambda: f.read(4096), b""):
+                                    file_hash.update(chunk)
+                        except PermissionError:
+                            # If permission denied, use sudo cat to read file
+                            import subprocess
+                            result = subprocess.run(
+                                ["sudo", "cat", str(file)],
+                                capture_output=True,
+                                timeout=60
+                            )
+                            if result.returncode != 0:
+                                raise OSError(f"Cannot read file for hash: {result.stderr.decode()}")
+                            # Calculate hash in chunks
+                            data = result.stdout
+                            for i in range(0, len(data), 4096):
+                                file_hash.update(data[i:i+4096])
                         hash_str = file_hash.hexdigest()[:16]
                         
                         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -654,15 +669,48 @@ class LinuxAgent(BaseAgent):
                         quarantine_name = f"{timestamp}_{hash_str}_{safe_name}"
                         quarantine_path = quarantine_dir / quarantine_name
                         
-                        # Copy to quarantine
+                        # Copy to quarantine (using sudo if needed)
                         logger.info(f"📋 Copying {file} to quarantine: {quarantine_path}")
-                        shutil.copy2(file, quarantine_path)
+                        try:
+                            shutil.copy2(file, quarantine_path)
+                        except PermissionError:
+                            # If permission denied, try with sudo cp
+                            import subprocess
+                            result = subprocess.run(
+                                ["sudo", "cp", str(file), str(quarantine_path)],
+                                capture_output=True,
+                                text=True,
+                                timeout=30
+                            )
+                            if result.returncode != 0:
+                                raise OSError(f"Quarantine copy failed with sudo: {result.stderr}")
+                            # Set ownership to fubar user
+                            subprocess.run(
+                                ["sudo", "chown", "fubar:fubar", str(quarantine_path)],
+                                capture_output=True,
+                                timeout=5
+                            )
                         
                         # Verify the file was actually copied
                         if not quarantine_path.exists():
                             raise OSError(f"Quarantine copy failed: {quarantine_path} does not exist after copy")
                         
-                        quarantine_size = quarantine_path.stat().st_size
+                        try:
+                            quarantine_size = quarantine_path.stat().st_size
+                        except PermissionError:
+                            # Try with sudo stat
+                            import subprocess
+                            result = subprocess.run(
+                                ["sudo", "stat", "-c", "%s", str(quarantine_path)],
+                                capture_output=True,
+                                text=True,
+                                timeout=5
+                            )
+                            if result.returncode == 0:
+                                quarantine_size = int(result.stdout.strip())
+                            else:
+                                raise OSError(f"Cannot verify quarantine file size: {result.stderr}")
+                        
                         if quarantine_size != file_size:
                             raise OSError(f"Quarantine copy size mismatch: original={file_size}, quarantined={quarantine_size}")
                         
