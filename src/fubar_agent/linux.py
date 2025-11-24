@@ -405,8 +405,22 @@ class LinuxAgent(BaseAgent):
                 
                 # Check file header/magic number for mismatches
                 try:
-                    with open(file, 'rb') as f:
-                        header = f.read(16)
+                    # Try to open file directly first
+                    try:
+                        with open(file, 'rb') as f:
+                            header = f.read(16)
+                    except PermissionError:
+                        # If permission denied, try with sudo
+                        import subprocess
+                        result = subprocess.run(
+                            ["sudo", "head", "-c", "16", str(file)],
+                            capture_output=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            header = result.stdout[:16]
+                        else:
+                            raise PermissionError(f"Cannot read file header: {result.stderr.decode()}")
                         
                         # Check for PE (Windows executable) header
                         if header[:2] == b'MZ':
@@ -527,8 +541,22 @@ class LinuxAgent(BaseAgent):
                 
                 # Check for high entropy (potential encryption/packing) - using shared method
                 try:
-                    with open(file, 'rb') as f:
-                        sample = f.read(min(4096, file_size))
+                    # Try to open file directly first
+                    try:
+                        with open(file, 'rb') as f:
+                            sample = f.read(min(4096, file_size))
+                    except PermissionError:
+                        # If permission denied, try with sudo
+                        import subprocess
+                        result = subprocess.run(
+                            ["sudo", "head", "-c", str(min(4096, file_size)), str(file)],
+                            capture_output=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            sample = result.stdout
+                        else:
+                            raise PermissionError(f"Cannot read file for entropy: {result.stderr.decode()}")
                         if len(sample) > 0:
                             entropy = self._calculate_entropy(sample)
                             
