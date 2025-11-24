@@ -87,8 +87,34 @@ class StreamUploader:
     ) -> Dict[str, Any]:
         """Internal upload implementation with retry logic and concurrent chunk uploads."""
         import hashlib
+        import os
         
-        file_size = file_path.stat().st_size
+        # Get file size (using sudo if needed on Linux)
+        try:
+            file_size = file_path.stat().st_size
+            use_sudo = False
+        except PermissionError:
+            # On Linux, try with sudo if permission denied
+            if os.name != 'nt':
+                import subprocess
+                try:
+                    result = subprocess.run(
+                        ["sudo", "stat", "-c", "%s", str(file_path)],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        file_size = int(result.stdout.strip())
+                        use_sudo = True
+                    else:
+                        raise PermissionError(f"Cannot access file {file_path}: {result.stderr}")
+                except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                    raise PermissionError(f"Cannot access file {file_path}: {e}")
+            else:
+                raise
+        else:
+            use_sudo = False
         
         # Initialize hash calculator
         sha256_hash = hashlib.sha256()
@@ -112,7 +138,41 @@ class StreamUploader:
         
         for attempt in range(self.config.retry_attempts):
             try:
-                async with aiofiles.open(file_path, 'rb') as f:
+                # Open file (using sudo if needed)
+                if use_sudo:
+                    # Use subprocess to read file with sudo
+                    import subprocess
+                    proc = await asyncio.create_subprocess_exec(
+                        "sudo", "cat", str(file_path),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    # Create a file-like object from the subprocess
+                    class SubprocessFileReader:
+                        def __init__(self, proc, file_size):
+                            self.proc = proc
+                            self.file_size = file_size
+                            self.bytes_read = 0
+                        
+                        async def read(self, size):
+                            if self.bytes_read >= self.file_size:
+                                return b''
+                            chunk = await self.proc.stdout.read(size)
+                            self.bytes_read += len(chunk)
+                            return chunk
+                        
+                        async def __aenter__(self):
+                            return self
+                        
+                        async def __aexit__(self, *args):
+                            self.proc.terminate()
+                            await self.proc.wait()
+                    
+                    f = SubprocessFileReader(proc, file_size)
+                else:
+                    f = aiofiles.open(file_path, 'rb')
+                
+                async with f:
                     # Create multipart upload
                     upload_id = await self._initiate_upload(endpoint, file_path.name, file_size, metadata)
                     

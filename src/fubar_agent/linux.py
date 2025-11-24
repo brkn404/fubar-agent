@@ -5,6 +5,7 @@ Linux-specific Agent Implementation
 import asyncio
 import logging
 import os
+import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -750,11 +751,35 @@ class LinuxAgent(BaseAgent):
         if not source:
             raise ValueError("No source specified for backup job")
         
-        # Validate source path exists
+        # Validate source path exists (using sudo if needed)
         source_path = Path(source)
-        if not source_path.exists():
-            raise ValueError(f"Source path does not exist: {source}")
-        if not source_path.is_dir() and not source_path.is_file():
+        if not self._check_path_with_sudo(source_path):
+            raise ValueError(f"Source path does not exist or is not accessible: {source}")
+        
+        # Check if it's a file or directory (using sudo if needed)
+        try:
+            is_file = source_path.is_file()
+            is_dir = source_path.is_dir()
+        except PermissionError:
+            # Try with sudo
+            try:
+                result = subprocess.run(
+                    ["sudo", "test", "-f", str(source_path)],
+                    capture_output=True,
+                    timeout=5
+                )
+                is_file = result.returncode == 0
+                if not is_file:
+                    result = subprocess.run(
+                        ["sudo", "test", "-d", str(source_path)],
+                        capture_output=True,
+                        timeout=5
+                    )
+                    is_dir = result.returncode == 0
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                raise ValueError(f"Source path is not accessible: {source}")
+        
+        if not is_file and not is_dir:
             raise ValueError(f"Source path is not a file or directory: {source}")
         
         tags = job.get("metadata", {}).get("tags", [])
@@ -823,8 +848,11 @@ class LinuxAgent(BaseAgent):
                         previous_snapshot = existing_snapshots[0]
                         logger.info(f"Using most recent snapshot for hardlinks: {previous_snapshot}")
         
-        # Build rsync command
-        cmd = ["rsync", "-a", "--delete", "--no-group", "--no-owner", "--partial"]
+        # Build rsync command (prepend sudo if needed)
+        if use_sudo:
+            cmd = ["sudo", "rsync", "-a", "--delete", "--no-group", "--no-owner", "--partial"]
+        else:
+            cmd = ["rsync", "-a", "--delete", "--no-group", "--no-owner", "--partial"]
         
         # Exclude common cache and temporary directories to save space
         exclude_patterns = [
@@ -857,13 +885,17 @@ class LinuxAgent(BaseAgent):
         
         cmd.append(str(snapshot_dir))
         
-        # Verify source exists and is accessible
-        if not source_path.exists():
-            raise ValueError(f"Source path does not exist: {source}")
+        # Verify source exists and is accessible (using sudo if needed)
+        if not self._check_path_with_sudo(source_path):
+            raise ValueError(f"Source path does not exist or is not accessible: {source}")
         
-        # Check source permissions
-        if not os.access(source_path, os.R_OK):
-            raise PermissionError(f"Source path is not readable: {source}")
+        # Check source permissions (using sudo if needed)
+        if not self._check_path_readable_with_sudo(source_path):
+            # If we can't read it directly, we'll need to use sudo for rsync
+            logger.warning(f"Source path not directly readable, will use sudo for rsync: {source}")
+            use_sudo = True
+        else:
+            use_sudo = False
         
         # Verify destination directory exists and is writable
         if not snapshot_dir.parent.exists():

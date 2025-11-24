@@ -1382,14 +1382,44 @@ class BaseAgent:
                     pass
         else:
             source_path = Path(source)
-            if source_path.exists():
-                try:
-                    source_path = source_path.resolve()
-                except (OSError, RuntimeError):
-                    pass
-        
-        if not source_path.exists():
-            raise ValueError(f"Source path does not exist: {source} (tried: {source_path})")
+            # Try to check if path exists, using sudo if needed (Linux only)
+            path_exists = False
+            try:
+                if source_path.exists():
+                    path_exists = True
+                    try:
+                        source_path = source_path.resolve()
+                    except (OSError, RuntimeError):
+                        pass
+            except PermissionError:
+                # On Linux, try with sudo if permission denied
+                if os.name != 'nt':
+                    import subprocess
+                    try:
+                        result = subprocess.run(
+                            ["sudo", "test", "-e", str(source_path)],
+                            capture_output=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            path_exists = True
+                            # Try to resolve with sudo
+                            try:
+                                result = subprocess.run(
+                                    ["sudo", "readlink", "-f", str(source_path)],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=5
+                                )
+                                if result.returncode == 0 and result.stdout.strip():
+                                    source_path = Path(result.stdout.strip())
+                            except Exception:
+                                pass
+                    except (subprocess.TimeoutExpired, FileNotFoundError):
+                        pass
+            
+            if not path_exists:
+                raise ValueError(f"Source path does not exist or is not accessible: {source} (tried: {source_path})")
         
         # Prepare metadata for backup streaming
         metadata = {
@@ -1407,7 +1437,25 @@ class BaseAgent:
         if source_path.is_file():
             # Stream single file
             logger.info(f"Streaming file directly to server: {source_path}")
-            file_size = source_path.stat().st_size
+            # Get file size (using sudo if needed)
+            try:
+                file_size = source_path.stat().st_size
+            except PermissionError:
+                if os.name != 'nt':
+                    import subprocess
+                    result = subprocess.run(
+                        ["sudo", "stat", "-c", "%s", str(source_path)],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        file_size = int(result.stdout.strip())
+                    else:
+                        raise PermissionError(f"Cannot access file {source_path}: {result.stderr}")
+                else:
+                    raise
+            
             await self.stream_uploader.upload_file(
                 source_path,
                 "/api/v1/streaming",
@@ -1420,11 +1468,34 @@ class BaseAgent:
             # Stream directory files directly
             logger.info(f"Streaming directory directly to server: {source_path}")
             
-            # Discover files
+            # Discover files (using sudo if needed on Linux)
             files = []
-            for file_path in source_path.rglob('*'):
-                if file_path.is_file():
-                    files.append(file_path)
+            try:
+                for file_path in source_path.rglob('*'):
+                    if file_path.is_file():
+                        files.append(file_path)
+            except PermissionError:
+                # On Linux, try with sudo find if permission denied
+                if os.name != 'nt':
+                    import subprocess
+                    try:
+                        logger.warning(f"Permission denied accessing {source_path}, using sudo find...")
+                        result = subprocess.run(
+                            ["sudo", "find", str(source_path), "-type", "f"],
+                            capture_output=True,
+                            text=True,
+                            timeout=300  # 5 minute timeout for large directories
+                        )
+                        if result.returncode == 0:
+                            for line in result.stdout.strip().split('\n'):
+                                if line.strip():
+                                    files.append(Path(line.strip()))
+                        else:
+                            raise PermissionError(f"Cannot access directory {source_path}: {result.stderr}")
+                    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                        raise PermissionError(f"Cannot access directory {source_path}: {e}")
+                else:
+                    raise
             
             total_files = len(files)
             await self.report_job_status(
@@ -1436,12 +1507,35 @@ class BaseAgent:
             uploaded = 0
             for file_path in files:
                 try:
-                    file_size = file_path.stat().st_size
+                    # Get file size (using sudo if needed)
+                    try:
+                        file_size = file_path.stat().st_size
+                    except PermissionError:
+                        if os.name != 'nt':
+                            import subprocess
+                            result = subprocess.run(
+                                ["sudo", "stat", "-c", "%s", str(file_path)],
+                                capture_output=True,
+                                text=True,
+                                timeout=5
+                            )
+                            if result.returncode == 0:
+                                file_size = int(result.stdout.strip())
+                            else:
+                                logger.warning(f"Cannot get size for {file_path}, skipping...")
+                                continue
+                        else:
+                            raise
+                    
                     total_size += file_size
                     
                     # Update metadata with relative path
                     file_metadata = metadata.copy()
-                    file_metadata["relative_path"] = str(file_path.relative_to(source_path))
+                    try:
+                        file_metadata["relative_path"] = str(file_path.relative_to(source_path))
+                    except ValueError:
+                        # If paths are on different drives or can't be relativized, use absolute
+                        file_metadata["relative_path"] = str(file_path)
                     
                     await self.stream_uploader.upload_file(
                         file_path,
