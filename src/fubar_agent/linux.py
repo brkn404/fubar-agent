@@ -690,7 +690,9 @@ class LinuxAgent(BaseAgent):
                     })
         
         except Exception as e:
-            logger.debug(f"Error scanning file {file_path}: {e}")
+            import traceback
+            logger.error(f"❌ Error scanning file {file_path}: {e}")
+            logger.error(f"   Traceback: {traceback.format_exc()}")
     
     def _get_yara_rules_search_paths(self) -> List[Path]:
         """Get Linux-specific YARA rules search paths"""
