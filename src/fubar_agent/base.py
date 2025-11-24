@@ -2194,11 +2194,21 @@ class BaseAgent:
         if malware_rules.exists():
             try:
                 logger.debug(f"Running: yara -s {malware_rules} {file_path}")
-                process = await asyncio.create_subprocess_exec(
-                    'yara', '-s', str(malware_rules), str(file_path),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
+                # Try yara command first, if it fails with permission error, try with sudo
+                try:
+                    process = await asyncio.create_subprocess_exec(
+                        'yara', '-s', str(malware_rules), str(file_path),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                except PermissionError:
+                    # If permission denied, try with sudo
+                    logger.debug(f"Permission denied, trying with sudo: sudo yara -s {malware_rules} {file_path}")
+                    process = await asyncio.create_subprocess_exec(
+                        'sudo', 'yara', '-s', str(malware_rules), str(file_path),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
                 stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
                 
                 # Log YARA return code and output for debugging
