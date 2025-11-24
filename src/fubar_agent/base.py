@@ -1434,7 +1434,36 @@ class BaseAgent:
         backed_up_files = 0
         total_size = 0
         
-        if source_path.is_file():
+        # Check if it's a file or directory (using sudo if needed)
+        is_file = False
+        is_dir = False
+        try:
+            is_file = source_path.is_file()
+            is_dir = source_path.is_dir()
+        except PermissionError:
+            # On Linux, try with sudo if permission denied
+            if os.name != 'nt':
+                import subprocess
+                try:
+                    result = subprocess.run(
+                        ["sudo", "test", "-f", str(source_path)],
+                        capture_output=True,
+                        timeout=5
+                    )
+                    is_file = result.returncode == 0
+                    if not is_file:
+                        result = subprocess.run(
+                            ["sudo", "test", "-d", str(source_path)],
+                            capture_output=True,
+                            timeout=5
+                        )
+                        is_dir = result.returncode == 0
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    raise PermissionError(f"Cannot determine if path is file or directory: {source_path}")
+            else:
+                raise
+        
+        if is_file:
             # Stream single file
             logger.info(f"Streaming file directly to server: {source_path}")
             # Get file size (using sudo if needed)
@@ -1464,7 +1493,7 @@ class BaseAgent:
             total_files = 1
             backed_up_files = 1
             total_size = file_size
-        elif source_path.is_dir():
+        elif is_dir:
             # Stream directory files directly
             logger.info(f"Streaming directory directly to server: {source_path}")
             
